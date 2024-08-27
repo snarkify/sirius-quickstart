@@ -23,16 +23,13 @@ const FOLD_STEP_COUNT: usize = 5;
 // === PRIMARY ===
 
 /// Arity : Input/output size per fold-step for primary step-circuit
-const A1: usize = 1;
-
-/// Input to be passed on the zero step to the primary circuit
-const PRIMARY_Z_0: [C1Scalar; A1] = [C1Scalar::ZERO];
+const A1: usize = 4;
 
 /// Key size for Primary Circuit
 ///
 /// This is the minimum value, for your circuit you may get the output that the key size is
 /// insufficient, then increase this constant
-const PRIMARY_COMMITMENT_KEY_SIZE: usize = 20;
+const PRIMARY_COMMITMENT_KEY_SIZE: usize = 21;
 
 /// Table size for Primary Circuit
 ///
@@ -47,7 +44,7 @@ const PRIMARY_CIRCUIT_TABLE_SIZE: usize = 17;
 const A2: usize = 1;
 
 /// Input to be passed on the zero step to the secondary circuit
-const SECONDARY_Z_0: [C2Scalar; A1] = [C2Scalar::ZERO];
+const SECONDARY_Z_0: [C2Scalar; A2] = [C2Scalar::ZERO];
 
 /// Table size for Primary Circuit
 ///
@@ -59,17 +56,16 @@ const SECONDARY_CIRCUIT_TABLE_SIZE: usize = 17;
 ///
 /// This is the minimum value, for your circuit you may get the output that the key size is
 /// insufficient, then increase this constant
-const SECONDARY_COMMITMENT_KEY_SIZE: usize = 20;
+const SECONDARY_COMMITMENT_KEY_SIZE: usize = 21;
 
 /// This structure is a template for configuring your circuit
 ///
 /// It should store information about your PLONKish structure
 #[derive(Debug, Clone)]
 struct MyStepCircuit<const L: usize, F: PrimeField> {
-    input_0: Vec<Value<F>>,
-    input_1: Vec<F>,
-    shuffle_0: Vec<Value<F>>,
-    shuffle_1: Vec<Value<F>>,
+    input_1: [F; L],
+    shuffle_0: [Value<F>; L],
+    shuffle_1: [Value<F>; L],
 }
 
 type MyConfig = shuffle_api::ShuffleConfig;
@@ -79,12 +75,11 @@ impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit<A, F> {
     type Config = MyConfig;
 
     /// Configure the step circuit. This method initializes necessary
-    /// fixed columns and advice columns, but does not create any instance
-    /// columns.
-    ///
-    // TODO #329
+    /// fixed columns and advice columns
     fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
         let input_0 = meta.advice_column();
+        meta.enable_equality(input_0);
+
         let input_1 = meta.fixed_column();
         let shuffle_0 = meta.advice_column();
         let shuffle_1 = meta.advice_column();
@@ -100,17 +95,16 @@ impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit<A, F> {
         &self,
         config: Self::Config,
         layouter: &mut impl Layouter<F>,
-        _z_i: &[AssignedCell<F, F>; A],
+        z_i: &[AssignedCell<F, F>; A],
     ) -> Result<[AssignedCell<F, F>; A], SynthesisError> {
         let ch = ShuffleChip::<F>::construct(config);
 
         layouter.assign_region(
             || "load inputs",
             |mut region| {
-                for (i, (input_0, input_1)) in
-                    self.input_0.iter().zip(self.input_1.iter()).enumerate()
-                {
-                    region.assign_advice(|| "input_0", ch.config.input_0, i, || *input_0)?;
+                for (i, (input_0, input_1)) in z_i.iter().zip(self.input_1.iter()).enumerate() {
+                    input_0.copy_advice(|| "input 0", &mut region, ch.config.input_0, i)?;
+
                     region.assign_fixed(
                         || "input_1",
                         ch.config.input_1,
@@ -122,38 +116,41 @@ impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit<A, F> {
                 Ok(())
             },
         )?;
-        layouter.assign_region(
+        let z_out = layouter.assign_region(
             || "load shuffles",
             |mut region| {
-                for (i, (shuffle_0, shuffle_1)) in
-                    self.shuffle_0.iter().zip(self.shuffle_1.iter()).enumerate()
-                {
-                    region.assign_advice(|| "shuffle_0", ch.config.shuffle_0, i, || *shuffle_0)?;
-                    region.assign_advice(|| "shuffle_1", ch.config.shuffle_1, i, || *shuffle_1)?;
-                    ch.config.s_shuffle.enable(&mut region, i)?;
-                }
-                Ok(())
+                self.shuffle_0
+                    .iter()
+                    .zip(self.shuffle_1.iter())
+                    .enumerate()
+                    .map(|(i, (shuffle_0, shuffle_1))| {
+                        region.assign_advice(
+                            || "shuffle_1",
+                            ch.config.shuffle_1,
+                            i,
+                            || *shuffle_1,
+                        )?;
+                        ch.config.s_shuffle.enable(&mut region, i)?;
+
+                        region.assign_advice(|| "shuffle_0", ch.config.shuffle_0, i, || *shuffle_0)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
             },
         )?;
 
-        todo!()
+        // For this commit - ignore processing of input
+        Ok(z_out.try_into().unwrap())
     }
 }
 
 fn main() {
-    let input_0 = [1, 2, 4, 1]
-        .map(|e: u64| Value::known(C1Scalar::from(e)))
-        .to_vec();
-    let input_1 = [10, 20, 40, 10].map(C1Scalar::from).to_vec();
-    let shuffle_0 = [4, 1, 1, 2]
-        .map(|e: u64| Value::known(C1Scalar::from(e)))
-        .to_vec();
-    let shuffle_1 = [40, 10, 10, 20]
-        .map(|e: u64| Value::known(C1Scalar::from(e)))
-        .to_vec();
+    let primary_input_z_0 = [1, 2, 4, 1].map(|e: u64| C1Scalar::from(e));
+    let input_1 = [10, 20, 40, 10].map(C1Scalar::from);
+
+    let shuffle_0 = [4, 1, 1, 2].map(|e: u64| Value::known(C1Scalar::from(e)));
+    let shuffle_1 = [40, 10, 10, 20].map(|e: u64| Value::known(C1Scalar::from(e)));
 
     let sc1 = MyStepCircuit::<A1, C1Scalar> {
-        input_0,
         input_1,
         shuffle_0,
         shuffle_1,
@@ -200,7 +197,7 @@ fn main() {
         &sc2,
     );
 
-    let mut ivc = IVC::new(&pp, &sc1, PRIMARY_Z_0, &sc2, SECONDARY_Z_0, true)
+    let mut ivc = IVC::new(&pp, &sc1, primary_input_z_0, &sc2, SECONDARY_Z_0, true)
         .expect("failed to create `IVC`");
     println!("ivc created");
 
