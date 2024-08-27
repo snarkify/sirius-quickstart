@@ -1,8 +1,8 @@
 [package]
-name = "sirius-quickstart"
+name = "sirius-halo2-gadget-migration"
 version = "0.1.0"
 edition = "2021"
-repository = "https://github.com/snarkify/sirius-quickstart"
+repository = "https://github.com/snarkify/sirius-halo2-gadget-migration"
 license = "MIT"
 
 [dependencies]
