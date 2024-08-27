@@ -6,4 +6,5 @@ repository = "https://github.com/snarkify/sirius-halo2-gadget-migration"
 license = "MIT"
 
 [dependencies]
+rand = "0.8.5"
 sirius = { git = "https://github.com/snarkify/sirius/", tag = "v0.1.1", version = "0.1.1" }

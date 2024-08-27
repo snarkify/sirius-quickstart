@@ -1,7 +1,9 @@
 use std::path::Path;
 
+use shuffle_api::ShuffleChip;
 use sirius::{
     ff::Field,
+    halo2_proofs::circuit::Value,
     ivc::{
         step_circuit::{trivial, AssignedCell, ConstraintSystem, Layouter},
         SynthesisError,
@@ -11,6 +13,9 @@ use sirius::{
         CommitmentKey, PrimeField, StepCircuit, IVC,
     },
 };
+
+#[allow(dead_code)]
+mod shuffle_api;
 
 /// Number of folding steps
 const FOLD_STEP_COUNT: usize = 5;
@@ -60,13 +65,16 @@ const SECONDARY_COMMITMENT_KEY_SIZE: usize = 20;
 ///
 /// It should store information about your PLONKish structure
 #[derive(Debug, Clone)]
-struct MyConfig {}
+struct MyStepCircuit<const L: usize, F: PrimeField> {
+    input_0: Vec<Value<F>>,
+    input_1: Vec<F>,
+    shuffle_0: Vec<Value<F>>,
+    shuffle_1: Vec<Value<F>>,
+}
 
-/// This page is a template for your circuit
-/// Within this code - it returns the input unchanged
-struct MyStepCircuit {}
+type MyConfig = shuffle_api::ShuffleConfig;
 
-impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit {
+impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit<A, F> {
     /// This is a configuration object that stores things like columns.
     type Config = MyConfig;
 
@@ -75,8 +83,12 @@ impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit {
     /// columns.
     ///
     // TODO #329
-    fn configure(_cs: &mut ConstraintSystem<F>) -> Self::Config {
-        MyConfig {}
+    fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
+        let input_0 = meta.advice_column();
+        let input_1 = meta.fixed_column();
+        let shuffle_0 = meta.advice_column();
+        let shuffle_1 = meta.advice_column();
+        ShuffleChip::configure(meta, input_0, input_1, shuffle_0, shuffle_1)
     }
 
     /// Sythesize the circuit for a computation step and return variable
@@ -86,17 +98,67 @@ impl<const A: usize, F: PrimeField> StepCircuit<A, F> for MyStepCircuit {
     /// Return `z_out` result
     fn synthesize_step(
         &self,
-        _config: Self::Config,
-        _layouter: &mut impl Layouter<F>,
-        z_i: &[AssignedCell<F, F>; A],
+        config: Self::Config,
+        layouter: &mut impl Layouter<F>,
+        _z_i: &[AssignedCell<F, F>; A],
     ) -> Result<[AssignedCell<F, F>; A], SynthesisError> {
-        // For this example we do not modify anything, we return the input unchanged
-        Ok(z_i.clone())
+        let ch = ShuffleChip::<F>::construct(config);
+
+        layouter.assign_region(
+            || "load inputs",
+            |mut region| {
+                for (i, (input_0, input_1)) in
+                    self.input_0.iter().zip(self.input_1.iter()).enumerate()
+                {
+                    region.assign_advice(|| "input_0", ch.config.input_0, i, || *input_0)?;
+                    region.assign_fixed(
+                        || "input_1",
+                        ch.config.input_1,
+                        i,
+                        || Value::known(*input_1),
+                    )?;
+                    ch.config.s_input.enable(&mut region, i)?;
+                }
+                Ok(())
+            },
+        )?;
+        layouter.assign_region(
+            || "load shuffles",
+            |mut region| {
+                for (i, (shuffle_0, shuffle_1)) in
+                    self.shuffle_0.iter().zip(self.shuffle_1.iter()).enumerate()
+                {
+                    region.assign_advice(|| "shuffle_0", ch.config.shuffle_0, i, || *shuffle_0)?;
+                    region.assign_advice(|| "shuffle_1", ch.config.shuffle_1, i, || *shuffle_1)?;
+                    ch.config.s_shuffle.enable(&mut region, i)?;
+                }
+                Ok(())
+            },
+        )?;
+
+        todo!()
     }
 }
 
 fn main() {
-    let sc1 = MyStepCircuit {};
+    let input_0 = [1, 2, 4, 1]
+        .map(|e: u64| Value::known(C1Scalar::from(e)))
+        .to_vec();
+    let input_1 = [10, 20, 40, 10].map(C1Scalar::from).to_vec();
+    let shuffle_0 = [4, 1, 1, 2]
+        .map(|e: u64| Value::known(C1Scalar::from(e)))
+        .to_vec();
+    let shuffle_1 = [40, 10, 10, 20]
+        .map(|e: u64| Value::known(C1Scalar::from(e)))
+        .to_vec();
+
+    let sc1 = MyStepCircuit::<A1, C1Scalar> {
+        input_0,
+        input_1,
+        shuffle_0,
+        shuffle_1,
+    };
+
     let sc2 = trivial::Circuit::<A2, C2Scalar>::default();
 
     // This folder will store the commitment key so that we don't have to generate it every time.
